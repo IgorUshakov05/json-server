@@ -1,224 +1,374 @@
 import sys
 import requests
-from pymongo import MongoClient
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, QLineEdit, QPushButton, QListWidget, QMessageBox,
-    QDialog, QTextEdit, QGridLayout, QTabWidget, QComboBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLineEdit, QListWidget, QLabel, QTabWidget, QTextEdit, QMessageBox
 )
-import re
+from PySide6.QtCore import Qt
 
-# Настройки
-API_URL = 'http://localhost:3000/'  # Адрес вашего json-server
-MONGO_URI = 'mongodb://localhost:27017/'  # Адрес MongoDB
-DB_NAME = 'movie_app'
-WATCHLIST_COLLECTION = 'watchlist'
 
-# Подключение к MongoDB
-client = MongoClient(MONGO_URI)
-db = client[DB_NAME]
-watchlist_collection = db[WATCHLIST_COLLECTION]
-
-class MovieDetailsDialog(QDialog):
-    """Окно с подробной информацией о фильме/сериале"""
-    def __init__(self, content_data, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Информация: {content_data['title']}")
-        
-        layout = QGridLayout()
-        
-        # Отображение названия
-        title_label = QLabel("Название:")
-        layout.addWidget(title_label, 0, 0)
-        title_value = QLabel(content_data.get('title', 'N/A'))
-        layout.addWidget(title_value, 0, 1)
-        
-        # Отображение описания
-        description_label = QLabel("Описание:")
-        layout.addWidget(description_label, 1, 0)
-        description_value = QTextEdit(content_data.get('description', 'N/A'))
-        description_value.setReadOnly(True)
-        layout.addWidget(description_value, 1, 1)
-        
-        # Отображение рейтинга
-        rating_label = QLabel("Рейтинг:")
-        layout.addWidget(rating_label, 2, 0)
-        rating_value = QLabel(str(content_data.get('rating', 'N/A')))
-        layout.addWidget(rating_value, 2, 1)
-        
-        # Отображение актеров
-        actors_label = QLabel("Актеры:")
-        layout.addWidget(actors_label, 3, 0)
-        actors_value = QLabel(", ".join(content_data.get('actors', ['N/A'])))
-        layout.addWidget(actors_value, 3, 1)
-        
-        # Отображение жанров
-        genres_label = QLabel("Жанры:")
-        layout.addWidget(genres_label, 4, 0)
-        genres_value = QLabel(", ".join(content_data.get('genres', ['N/A'])))
-        layout.addWidget(genres_value, 4, 1)
-        
-        self.setLayout(layout)
-
-class MovieApp(QMainWindow):
+class MediaApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Movie & Series App")
-        self.setGeometry(100, 100, 600, 400)
-        
-        # Основной layout
-        layout = QVBoxLayout()
-        
-        # Выбор типа контента (фильм/сериал)
-        self.content_type_combo = QComboBox()
-        self.content_type_combo.addItems(["Фильмы", "Сериалы"])
-        layout.addWidget(self.content_type_combo)
-        
-        # Поле для поиска
-        self.search_input = QLineEdit(self)
-        self.search_input.setPlaceholderText("Введите название, актера или жанр...")
-        layout.addWidget(self.search_input)
-        
-        # Кнопка поиска
-        self.search_button = QPushButton("Поиск", self)
-        self.search_button.clicked.connect(self.search_content)
-        layout.addWidget(self.search_button)
-        
-        # Вкладки для результатов и списка "Хочу посмотреть"
+        self.setWindowTitle("Media Finder")
+        self.setGeometry(100, 100, 800, 600)
+
+        # Список "Хочу посмотреть"
+        self.to_watch_movies = []
+        self.to_watch_series = []
+
+        # Главный виджет и layout
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout()
+
+        # Вкладки
         self.tabs = QTabWidget()
-        
-        # Вкладка результатов поиска
-        self.results_list = QListWidget()
-        self.results_list.itemDoubleClicked.connect(self.show_content_details)  # Добавляем обработчик двойного клика
-        self.tabs.addTab(self.results_list, "Результаты поиска")
-        
-        # Вкладка "Хочу посмотреть"
-        self.watchlist_list = QListWidget()
-        self.tabs.addTab(self.watchlist_list, "Хочу посмотреть")
-        
-        layout.addWidget(self.tabs)
-        
-        # Кнопка добавления в "Хочу посмотреть"
-        self.add_to_watchlist_button = QPushButton("Добавить в 'Хочу посмотреть'", self)
-        self.add_to_watchlist_button.clicked.connect(self.add_to_watchlist)
-        layout.addWidget(self.add_to_watchlist_button)
-        
-        # Кнопка обновления списка рекомендаций
-        self.recommendations_button = QPushButton("Получить рекомендации", self)
-        self.recommendations_button.clicked.connect(self.get_recommendations)
-        layout.addWidget(self.recommendations_button)
-        
-        # Установка основного виджета
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-        
-        # Загрузка списка "Хочу посмотреть" при запуске
-        self.load_watchlist()
+        self.movie_tab = QWidget()
+        self.series_tab = QWidget()
+        self.to_watch_tab = QWidget()  # Новая вкладка "Хочу посмотреть"
+        self.tabs.addTab(self.movie_tab, "Фильмы")
+        self.tabs.addTab(self.series_tab, "Сериалы")
+        self.tabs.addTab(self.to_watch_tab, "Хочу посмотреть")
 
-    def search_content(self):
-        """Поиск контента по названию, актерам или жанрам"""
-        query = self.search_input.text().strip()
-        if not query:
-            QMessageBox.warning(self, "Ошибка", "Введите запрос для поиска.")
-            return
-        
-        content_type = self.content_type_combo.currentText().lower()
-        response = requests.get(f"{API_URL}{content_type}", params={'q': query.lower()})
-        if response.status_code == 200:
-            self.results_list.clear()
-            contents = response.json()
-            for content in contents:
-                self.results_list.addItem(f"{content['title']} ({', '.join(content.get('genres', ['N/A']))})")
-        else:
-            QMessageBox.warning(self, "Ошибка", "Не удалось выполнить поиск.")
+        # Настройка вкладок
+        self.setup_movie_tab()
+        self.setup_series_tab()
+        self.setup_to_watch_tab()  # Настройка новой вкладки
 
-    def add_to_watchlist(self):
-        """Добавление контента в список 'Хочу посмотреть'"""
-        selected_item = self.results_list.currentItem()
+        # Добавляем вкладки в основной layout
+        self.layout.addWidget(self.tabs)
+        self.central_widget.setLayout(self.layout)
+
+        # Загрузка всех фильмов и сериалов при старте
+        self.load_all_movies()
+        self.load_all_series()
+
+        # Загрузка данных из TXT-файлов при запуске
+        self.load_to_watch_from_file()
+        self.update_to_watch_display()  # Обновляем отображение при старте
+
+    def setup_movie_tab(self):
+        layout = QVBoxLayout()
+
+        # Поиск фильма
+        search_layout = QHBoxLayout()
+        self.movie_search_input = QLineEdit()
+        self.movie_search_input.setPlaceholderText("Поиск фильма по названию, актерам или жанрам...")
+        search_button = QPushButton("Поиск")
+        search_button.clicked.connect(self.search_movies)
+        show_all_button = QPushButton("Показать все фильмы")
+        show_all_button.clicked.connect(self.load_all_movies)
+        search_layout.addWidget(self.movie_search_input)
+        search_layout.addWidget(search_button)
+        search_layout.addWidget(show_all_button)
+
+        # Результаты поиска
+        self.movie_results = QListWidget()
+        self.movie_results.itemClicked.connect(self.show_movie_details)
+
+        # Детали фильма
+        self.movie_details = QTextEdit()
+        self.movie_details.setReadOnly(True)
+
+        # Кнопка "Добавить в 'Хочу посмотреть'"
+        self.add_movie_to_watchlist_button = QPushButton("Добавить в 'Хочу посмотреть'")
+        self.add_movie_to_watchlist_button.clicked.connect(lambda: self.add_to_watch("movie"))
+
+        # Добавляем элементы на вкладку
+        layout.addLayout(search_layout)
+        layout.addWidget(self.movie_results)
+        layout.addWidget(self.movie_details)
+        layout.addWidget(self.add_movie_to_watchlist_button)
+
+        self.movie_tab.setLayout(layout)
+
+    def setup_series_tab(self):
+        layout = QVBoxLayout()
+
+        # Поиск сериала
+        search_layout = QHBoxLayout()
+        self.series_search_input = QLineEdit()
+        self.series_search_input.setPlaceholderText("Поиск сериала по названию, актерам или жанрам...")
+        search_button = QPushButton("Поиск")
+        search_button.clicked.connect(self.search_series)
+        show_all_button = QPushButton("Показать все сериалы")
+        show_all_button.clicked.connect(self.load_all_series)
+        search_layout.addWidget(self.series_search_input)
+        search_layout.addWidget(search_button)
+        search_layout.addWidget(show_all_button)
+
+        # Результаты поиска
+        self.series_results = QListWidget()
+        self.series_results.itemClicked.connect(self.show_series_details)
+
+        # Детали сериала
+        self.series_details = QTextEdit()
+        self.series_details.setReadOnly(True)
+
+        # Кнопка "Добавить в 'Хочу посмотреть'"
+        self.add_series_to_watchlist_button = QPushButton("Добавить в 'Хочу посмотреть'")
+        self.add_series_to_watchlist_button.clicked.connect(lambda: self.add_to_watch("series"))
+
+        # Добавляем элементы на вкладку
+        layout.addLayout(search_layout)
+        layout.addWidget(self.series_results)
+        layout.addWidget(self.series_details)
+        layout.addWidget(self.add_series_to_watchlist_button)
+
+        self.series_tab.setLayout(layout)
+
+    def setup_to_watch_tab(self):
+        layout = QVBoxLayout()
+
+        # Отображение фильмов и сериалов
+        self.to_watch_display = QTextEdit()
+        self.to_watch_display.setReadOnly(True)
+
+        # Добавляем элементы на вкладку
+        layout.addWidget(self.to_watch_display)
+
+        self.to_watch_tab.setLayout(layout)
+
+    def load_all_movies(self):
+        try:
+            response = requests.get("http://localhost:3000/movies")
+            data = response.json()
+
+            if isinstance(data, list):
+                movies = data
+            elif isinstance(data, dict) and "movies" in data:
+                movies = data["movies"]
+            else:
+                raise ValueError("Некорректная структура данных для фильмов")
+
+            self.movie_results.clear()
+            for movie in movies:
+                self.movie_results.addItem(f"{movie['title']} ({', '.join(movie['genres'])})")
+        except Exception as e:
+            print(f"Ошибка при загрузке всех фильмов: {e}")
+
+    def load_all_series(self):
+        try:
+            response = requests.get("http://localhost:3000/series")
+            data = response.json()
+
+            if isinstance(data, list):
+                series = data
+            elif isinstance(data, dict) and "series" in data:
+                series = data["series"]
+            else:
+                raise ValueError("Некорректная структура данных для сериалов")
+
+            self.series_results.clear()
+            for s in series:
+                self.series_results.addItem(f"{s['title']} ({', '.join(s['genres'])})")
+        except Exception as e:
+            print(f"Ошибка при загрузке всех сериалов: {e}")
+
+    def add_to_watch(self, media_type):
+        selected_item = None
+        title = None
+
+        if media_type == "movie":
+            selected_item = self.movie_results.currentItem()
+        elif media_type == "series":
+            selected_item = self.series_results.currentItem()
+
         if not selected_item:
-            QMessageBox.warning(self, "Ошибка", "Выберите контент из списка.")
             return
-        content_title = selected_item.text().split('(')[0].strip()
-        
-        # Проверяем, есть ли уже такой контент в списке
-        existing_content = watchlist_collection.find_one({'title': {'$regex': re.escape(content_title), '$options': 'i'}})
-        if existing_content:
-            QMessageBox.warning(self, "Ошибка", "Этот контент уже в списке 'Хочу посмотреть'.")
+
+        title = selected_item.text().split(" (")[0]
+
+        # Проверяем, не добавлен ли уже элемент
+        if media_type == "movie" and title in self.to_watch_movies:
+            QMessageBox.warning(self, "Ошибка", f"Фильм '{title}' уже в списке 'Хочу посмотреть'.")
             return
-        
-        # Добавление контента в MongoDB
-        content_data = {'title': content_title, 'type': self.content_type_combo.currentText(), 'watched': False}
-        result = watchlist_collection.insert_one(content_data)
-        if result.inserted_id:
-            self.load_watchlist()
-        else:
-            QMessageBox.warning(self, "Ошибка", "Не удалось добавить контент в список.")
-
-    def load_watchlist(self):
-        """Загрузка списка 'Хочу посмотреть' из MongoDB"""
-        self.watchlist_list.clear()  # Очистка списка
-        watchlist_contents = watchlist_collection.find({'watched': False})  # Получение записей из MongoDB
-        for content in watchlist_contents:  # Перебор записей
-            # Проверяем наличие поля 'type' и используем значение по умолчанию, если его нет
-            content_type = content.get('type', 'N/A')
-            self.watchlist_list.addItem(f"{content['title']} ({content_type})")  # Добавление записи в список
-
-    def get_recommendations(self):
-        """Получение рекомендаций"""
-        watchlist_contents = list(watchlist_collection.find({'watched': False}))
-        
-        # Собираем все уникальные жанры из списка "Хочу посмотреть"
-        genres = set()
-        for content in watchlist_contents:
-            if 'genres' in content and isinstance(content['genres'], list):
-                genres.update(content['genres'])
-        
-        if not genres:
-            QMessageBox.information(self, "Рекомендации", "Недостаточно данных для рекомендаций (добавьте контент с жанрами).")
+        elif media_type == "series" and title in self.to_watch_series:
+            QMessageBox.warning(self, "Ошибка", f"Сериал '{title}' уже в списке 'Хочу посмотреть'.")
             return
-        
-        recommendations = []
-        for genre in genres:
-            for content_type in ["movies", "series"]:
-                response = requests.get(f"{API_URL}{content_type}", params={'genres_like': genre})
-                if response.status_code == 200:
-                    contents = response.json()
-                    for content in contents:
-                        # Исключаем контент, который уже есть в списке "Хочу посмотреть"
-                        if not watchlist_collection.find_one({'title': content['title']}):
-                            recommendations.append(content)
-        
-        if recommendations:
-            recommended_content = recommendations[0]
-            QMessageBox.information(
-                self, "Рекомендации", 
-                f"Рекомендуем: {recommended_content['title']}\n"
-                f"Тип: {recommended_content.get('type', 'N/A')}\n"
-                f"Жанр: {', '.join(recommended_content.get('genres', ['N/A']))}\n"
-                f"Рейтинг: {recommended_content.get('rating', 'N/A')}"
-            )
-        else:
-            QMessageBox.information(self, "Рекомендации", "Нет подходящих рекомендаций.")
 
-    def show_content_details(self, item):
-        """Отображение подробной информации о контенте"""
-        content_title = item.text().split('(')[0].strip()
-        content_type = self.content_type_combo.currentText().lower()
-        
-        # Ищем контент по названию через API
-        response = requests.get(f"{API_URL}{content_type}", params={'title': content_title})
-        if response.status_code == 200:
-            contents = response.json()
-            for content in contents:
-                if content['title'] == content_title:
-                    dialog = MovieDetailsDialog(content, self)
-                    dialog.exec_()
-                    break
+        # Добавляем в список
+        if media_type == "movie":
+            self.to_watch_movies.append(title)
+        elif media_type == "series":
+            self.to_watch_series.append(title)
+
+        # Сохраняем в файл
+        self.save_to_watch_to_file()
+
+        # Обновляем отображение
+        self.update_to_watch_display()
+
+        # Уведомляем пользователя
+        QMessageBox.information(self, "Успех", f"'{title}' добавлен в 'Хочу посмотреть'.")
+
+    def save_to_watch_to_file(self):
+        # Сохраняем фильмы
+        with open("to_watch_movies.txt", "w", encoding="utf-8") as movie_file:
+            if self.to_watch_movies:
+                movie_file.write("Фильмы:\n")
+                for title in self.to_watch_movies:
+                    movie_file.write(f"- {title}\n")
+            else:
+                movie_file.write("Фильмы: (пусто)\n")
+
+        # Сохраняем сериалы
+        with open("to_watch_series.txt", "w", encoding="utf-8") as series_file:
+            if self.to_watch_series:
+                series_file.write("Сериалы:\n")
+                for title in self.to_watch_series:
+                    series_file.write(f"- {title}\n")
+            else:
+                series_file.write("Сериалы: (пусто)\n")
+
+    def load_to_watch_from_file(self):
+        # Загружаем фильмы
+        try:
+            with open("to_watch_movies.txt", "r", encoding="utf-8") as movie_file:
+                lines = movie_file.readlines()
+                self.to_watch_movies = [line.strip()[2:] for line in lines if line.startswith("-")]
+        except FileNotFoundError:
+            pass  # Файл не существует, игнорируем ошибку
+
+        # Загружаем сериалы
+        try:
+            with open("to_watch_series.txt", "r", encoding="utf-8") as series_file:
+                lines = series_file.readlines()
+                self.to_watch_series = [line.strip()[2:] for line in lines if line.startswith("-")]
+        except FileNotFoundError:
+            pass  # Файл не существует, игнорируем ошибку
+
+    def update_to_watch_display(self):
+        # Генерируем текст для отображения
+        to_watch_text = "Фильмы:\n"
+        if self.to_watch_movies:
+            for title in self.to_watch_movies:
+                to_watch_text += f"- {title}\n"
         else:
-            QMessageBox.warning(self, "Ошибка", "Не удалось найти информацию о контенте.")
+            to_watch_text += "(пусто)\n"
+
+        to_watch_text += "\nСериалы:\n"
+        if self.to_watch_series:
+            for title in self.to_watch_series:
+                to_watch_text += f"- {title}\n"
+        else:
+            to_watch_text += "(пусто)\n"
+
+        # Обновляем отображение
+        self.to_watch_display.setText(to_watch_text)
+
+    def search_movies(self):
+        query = self.movie_search_input.text().lower()
+        if not query:
+            return
+
+        try:
+            response = requests.get("http://localhost:3000/movies")
+            data = response.json()
+
+            if isinstance(data, list):
+                movies = data
+            elif isinstance(data, dict) and "movies" in data:
+                movies = data["movies"]
+            else:
+                raise ValueError("Некорректная структура данных для фильмов")
+
+            filtered_movies = [
+                movie for movie in movies
+                if query in movie["title"].lower() or
+                   any(query in actor.lower() for actor in movie["actors"]) or
+                   any(query in genre.lower() for genre in movie["genres"])
+            ]
+            self.movie_results.clear()
+            for movie in filtered_movies:
+                self.movie_results.addItem(f"{movie['title']} ({', '.join(movie['genres'])})")
+        except Exception as e:
+            print(f"Ошибка при поиске фильмов: {e}")
+
+    def show_movie_details(self, item):
+        title = item.text().split(" (")[0]
+        try:
+            response = requests.get("http://localhost:3000/movies")
+            data = response.json()
+
+            if isinstance(data, list):
+                movies = data
+            elif isinstance(data, dict) and "movies" in data:
+                movies = data["movies"]
+            else:
+                raise ValueError("Некорректная структура данных для фильмов")
+
+            movie = next((m for m in movies if m["title"] == title), None)
+            if movie:
+                details = (
+                    f"Название: {movie['title']}\n"
+                    f"Описание: {movie['description']}\n"
+                    f"Рейтинг: {movie['rating']}\n"
+                    f"Актеры: {', '.join(movie['actors'])}\n"
+                    f"Жанры: {', '.join(movie['genres'])}"
+                )
+                self.movie_details.setText(details)
+        except Exception as e:
+            print(f"Ошибка при получении деталей фильма: {e}")
+
+    def search_series(self):
+        query = self.series_search_input.text().lower()
+        if not query:
+            return
+
+        try:
+            response = requests.get("http://localhost:3000/series")
+            data = response.json()
+
+            if isinstance(data, list):
+                series = data
+            elif isinstance(data, dict) and "series" in data:
+                series = data["series"]
+            else:
+                raise ValueError("Некорректная структура данных для сериалов")
+
+            filtered_series = [
+                s for s in series
+                if query in s["title"].lower() or
+                   any(query in actor.lower() for actor in s["actors"]) or
+                   any(query in genre.lower() for genre in s["genres"])
+            ]
+            self.series_results.clear()
+            for s in filtered_series:
+                self.series_results.addItem(f"{s['title']} ({', '.join(s['genres'])})")
+        except Exception as e:
+            print(f"Ошибка при поиске сериалов: {e}")
+
+    def show_series_details(self, item):
+        title = item.text().split(" (")[0]
+        try:
+            response = requests.get("http://localhost:3000/series")
+            data = response.json()
+
+            if isinstance(data, list):
+                series = data
+            elif isinstance(data, dict) and "series" in data:
+                series = data["series"]
+            else:
+                raise ValueError("Некорректная структура данных для сериалов")
+
+            s = next((s for s in series if s["title"] == title), None)
+            if s:
+                details = (
+                    f"Название: {s['title']}\n"
+                    f"Описание: {s['description']}\n"
+                    f"Рейтинг: {s['rating']}\n"
+                    f"Актеры: {', '.join(s['actors'])}\n"
+                    f"Жанры: {', '.join(s['genres'])}"
+                )
+                self.series_details.setText(details)
+        except Exception as e:
+            print(f"Ошибка при получении деталей сериала: {e}")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = MovieApp()
+    window = MediaApp()
     window.show()
     sys.exit(app.exec())
