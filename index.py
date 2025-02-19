@@ -26,15 +26,18 @@ class MediaApp(QMainWindow):
         self.tabs = QTabWidget()
         self.movie_tab = QWidget()
         self.series_tab = QWidget()
-        self.to_watch_tab = QWidget()  # Новая вкладка "Хочу посмотреть"
+        self.to_watch_tab = QWidget()  # Вкладка "Хочу посмотреть"
+        self.recommendations_tab = QWidget()  # Новая вкладка "Рекомендации"
         self.tabs.addTab(self.movie_tab, "Фильмы")
         self.tabs.addTab(self.series_tab, "Сериалы")
         self.tabs.addTab(self.to_watch_tab, "Хочу посмотреть")
+        self.tabs.addTab(self.recommendations_tab, "Рекомендации")
 
         # Настройка вкладок
         self.setup_movie_tab()
         self.setup_series_tab()
-        self.setup_to_watch_tab()  # Настройка новой вкладки
+        self.setup_to_watch_tab()
+        self.setup_recommendations_tab()  # Настройка новой вкладки
 
         # Добавляем вкладки в основной layout
         self.layout.addWidget(self.tabs)
@@ -47,6 +50,7 @@ class MediaApp(QMainWindow):
         # Загрузка данных из TXT-файлов при запуске
         self.load_to_watch_from_file()
         self.update_to_watch_display()  # Обновляем отображение при старте
+        self.update_recommendations()  # Обновляем рекомендации при старте
 
     def setup_movie_tab(self):
         layout = QVBoxLayout()
@@ -130,6 +134,18 @@ class MediaApp(QMainWindow):
 
         self.to_watch_tab.setLayout(layout)
 
+    def setup_recommendations_tab(self):
+        layout = QVBoxLayout()
+
+        # Отображение рекомендаций
+        self.recommendations_display = QTextEdit()
+        self.recommendations_display.setReadOnly(True)
+
+        # Добавляем элементы на вкладку
+        layout.addWidget(self.recommendations_display)
+
+        self.recommendations_tab.setLayout(layout)
+
     def load_all_movies(self):
         try:
             response = requests.get("http://localhost:3000/movies")
@@ -199,6 +215,7 @@ class MediaApp(QMainWindow):
 
         # Обновляем отображение
         self.update_to_watch_display()
+        self.update_recommendations()  # Обновляем рекомендации
 
         # Уведомляем пользователя
         QMessageBox.information(self, "Успех", f"'{title}' добавлен в 'Хочу посмотреть'.")
@@ -257,6 +274,106 @@ class MediaApp(QMainWindow):
 
         # Обновляем отображение
         self.to_watch_display.setText(to_watch_text)
+
+    def update_recommendations(self):
+        # Собираем все жанры из "Хочу посмотреть"
+        genres = set()
+        for title in self.to_watch_movies:
+            movie = self.find_movie_by_title(title)
+            if movie:
+                genres.update(movie["genres"])
+
+        for title in self.to_watch_series:
+            series = self.find_series_by_title(title)
+            if series:
+                genres.update(series["genres"])
+
+        # Ищем рекомендации
+        recommendations = self.find_recommendations_by_genres(genres)
+
+        # Генерируем текст для отображения
+        recommendations_text = "Рекомендации:\n"
+        if recommendations:
+            for item in recommendations:
+                recommendations_text += f"- {item['title']} ({', '.join(item['genres'])})\n"
+        else:
+            recommendations_text += "(пусто)\n"
+
+        # Обновляем отображение
+        self.recommendations_display.setText(recommendations_text)
+
+    def find_movie_by_title(self, title):
+        try:
+            response = requests.get("http://localhost:3000/movies")
+            data = response.json()
+
+            if isinstance(data, list):
+                movies = data
+            elif isinstance(data, dict) and "movies" in data:
+                movies = data["movies"]
+            else:
+                return None
+
+            return next((m for m in movies if m["title"] == title), None)
+        except Exception as e:
+            print(f"Ошибка при поиске фильма: {e}")
+            return None
+
+    def find_series_by_title(self, title):
+        try:
+            response = requests.get("http://localhost:3000/series")
+            data = response.json()
+
+            if isinstance(data, list):
+                series = data
+            elif isinstance(data, dict) and "series" in data:
+                series = data["series"]
+            else:
+                return None
+
+            return next((s for s in series if s["title"] == title), None)
+        except Exception as e:
+            print(f"Ошибка при поиске сериала: {e}")
+            return None
+
+    def find_recommendations_by_genres(self, genres):
+        recommendations = []
+
+        try:
+            # Ищем фильмы
+            response_movies = requests.get("http://localhost:3000/movies")
+            data_movies = response_movies.json()
+
+            if isinstance(data_movies, list):
+                movies = data_movies
+            elif isinstance(data_movies, dict) and "movies" in data_movies:
+                movies = data_movies["movies"]
+            else:
+                movies = []
+
+            for movie in movies:
+                if any(genre in movie["genres"] for genre in genres) and movie["title"] not in self.to_watch_movies:
+                    recommendations.append(movie)
+
+            # Ищем сериалы
+            response_series = requests.get("http://localhost:3000/series")
+            data_series = response_series.json()
+
+            if isinstance(data_series, list):
+                series = data_series
+            elif isinstance(data_series, dict) and "series" in data_series:
+                series = data_series["series"]
+            else:
+                series = []
+
+            for s in series:
+                if any(genre in s["genres"] for genre in genres) and s["title"] not in self.to_watch_series:
+                    recommendations.append(s)
+
+        except Exception as e:
+            print(f"Ошибка при поиске рекомендаций: {e}")
+
+        return recommendations
 
     def search_movies(self):
         query = self.movie_search_input.text().lower()
